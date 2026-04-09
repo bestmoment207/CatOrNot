@@ -35,9 +35,7 @@ def _yt_ci_opts() -> dict:
     opts: dict = {
         "extractor_args": {
             "youtube": {
-                # tv_embedded alone is blocked on datacenter IPs.
-                # mweb + web_creator + ios provide better bypass for CI.
-                "player_client": ["mweb", "web_creator", "tv_embedded", "ios"],
+                "player_client": ["tv_embedded", "web", "mweb", "ios"],
             }
         },
         "nocheckcertificate": True,
