@@ -333,11 +333,20 @@ class VideoScraper:
             return {
                 "extractor_args": {
                     "youtube": {
-                        "po_token": [f"web+{po_token}"],
+                        # yt-dlp 2026.x format: "CLIENT.CONTEXT+TOKEN"
+                        "po_token": [
+                            f"web.gvs+{po_token}",
+                            f"web.player+{po_token}",
+                        ],
                         "player_client": ["web"],
                     }
                 },
                 "http_headers": {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
                     "X-Goog-Visitor-Id": visitor_data,
                 },
             }
