@@ -225,6 +225,12 @@ class Downloader:
             ],
         }
 
+        # Use cookies.txt if available (helps bypass YouTube bot-check on CI)
+        cookies_path = Path("data/cookies.txt")
+        if cookies_path.exists() and cookies_path.stat().st_size > 0:
+            base["cookiefile"] = str(cookies_path)
+            logger.debug(f"Using cookies file: {cookies_path}")
+
         if platform == "youtube":
             # Prefer vertical / square formats for Shorts; fall back to best
             base["format"] = (
