@@ -1,0 +1,169 @@
+name: 🐱 CatOrNot — Auto Upload
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cron times are UTC.  Indonesia WIB = UTC+7, so:
+#   09:00 WIB → 02:00 UTC  |  14:00 WIB → 07:00 UTC  |  19:00 WIB → 12:00 UTC
+#
+# Edit the cron expressions below to match your desired upload schedule.
+# GitHub Actions may delay scheduled runs up to 15 minutes during peak load.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '0 2 * * *'    # 09:00 WIB
+    - cron: '0 7 * * *'    # 14:00 WIB
+    - cron: '0 12 * * *'   # 19:00 WIB
+
+  # Manual trigger from the GitHub Actions tab (useful for testing)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — scrape + edit video, but skip YouTube upload'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # needed to commit data/used_videos.json back to the repo
+
+# Cancel any in-progress run for the same workflow (avoid double-uploads)
+concurrency:
+  group: catcentral-pipeline
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45   # hard kill if something hangs
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────────────────────
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python ───────────────────────────────────────────────────────────
+      - name: 🐍 Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      # ── 3. System deps ──────────────────────────────────────────────────────
+      - name: 📦 Install FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+
+      # ── 4. Python deps ──────────────────────────────────────────────────────
+      - name: 📦 Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # ── 5. Write .env ───────────────────────────────────────────────────────
+      # Secrets  → GitHub Settings → Secrets → Actions  (never visible in logs)
+      # Variables → GitHub Settings → Variables → Actions (visible, non-sensitive)
+      - name: 📝 Write .env from Secrets & Variables
+        env:
+          # ── Secrets (sensitive) ──────────────────────────────────────────────
+          GOOGLE_CLIENT_ID:     ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          # ── Variables (non-sensitive config) ────────────────────────────────
+          CLIPS_PER_VIDEO:      ${{ vars.CLIPS_PER_VIDEO      || '5' }}
+          CLIP_DURATION:        ${{ vars.CLIP_DURATION        || '25' }}
+          WATERMARK_TEXT:       ${{ vars.WATERMARK_TEXT       || '@CatOrNot' }}
+          TTS_ENABLED:          ${{ vars.TTS_ENABLED          || 'true' }}
+          TTS_VOICE:            ${{ vars.TTS_VOICE            || 'en-US-GuyNeural' }}
+          BGM_ENABLED:          ${{ vars.BGM_ENABLED          || 'false' }}
+          BGM_VOLUME:           ${{ vars.BGM_VOLUME           || '0.25' }}
+          BGM_DUCK_ENABLED:     ${{ vars.BGM_DUCK_ENABLED     || 'true' }}
+          BGM_DUCK_RATIO:       ${{ vars.BGM_DUCK_RATIO       || '6' }}
+          BGM_DUCK_THRESHOLD:   ${{ vars.BGM_DUCK_THRESHOLD   || '0.025' }}
+          DATA_CLEANUP_DAYS:    ${{ vars.DATA_CLEANUP_DAYS    || '3' }}
+          LOG_LEVEL:            ${{ vars.LOG_LEVEL            || 'INFO' }}
+        run: |
+          {
+            echo "GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}"
+            echo "GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}"
+            echo "CLIPS_PER_VIDEO=${CLIPS_PER_VIDEO}"
+            echo "CLIP_DURATION=${CLIP_DURATION}"
+            echo "WATERMARK_TEXT=${WATERMARK_TEXT}"
+            echo "TTS_ENABLED=${TTS_ENABLED}"
+            echo "TTS_VOICE=${TTS_VOICE}"
+            echo "BGM_ENABLED=${BGM_ENABLED}"
+            echo "BGM_VOLUME=${BGM_VOLUME}"
+            echo "BGM_DUCK_ENABLED=${BGM_DUCK_ENABLED}"
+            echo "BGM_DUCK_RATIO=${BGM_DUCK_RATIO}"
+            echo "BGM_DUCK_THRESHOLD=${BGM_DUCK_THRESHOLD}"
+            echo "DATA_CLEANUP_DAYS=${DATA_CLEANUP_DAYS}"
+            echo "LOG_LEVEL=${LOG_LEVEL}"
+          } > .env
+          echo "✓ .env written ($(wc -l < .env) lines)"
+
+      # ── 6. Restore YouTube OAuth token ──────────────────────────────────────
+      - name: 🔑 Restore YouTube OAuth token
+        run: |
+          mkdir -p data
+          echo '${{ secrets.YOUTUBE_TOKEN }}' | base64 --decode > data/youtube_token.json
+          BYTES=$(wc -c < data/youtube_token.json)
+          if [ "$BYTES" -lt 100 ]; then
+            echo "❌ YOUTUBE_TOKEN secret appears empty or invalid ($BYTES bytes)"
+            exit 1
+          fi
+          echo "✓ Token restored ($BYTES bytes)"
+
+      # ── 7. Run pipeline ─────────────────────────────────────────────────────
+      - name: 🚀 Run CatOrNot pipeline
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            echo "🧪 DRY RUN — video will be built but NOT uploaded"
+            python main.py test
+          else
+            python main.py run
+          fi
+
+      # ── 8. Persist refreshed token ──────────────────────────────────────────
+      # google-auth may silently refresh the access token during upload.
+      # We write the updated token back to the secret so future runs stay valid.
+      # Requires a Personal Access Token (PAT) with repo scope → secret GH_PAT
+      - name: 💾 Save refreshed YouTube token to secret
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "⚠ GH_PAT secret not set — skipping token update (add it to keep token fresh)"
+          elif [ -f data/youtube_token.json ] && [ -s data/youtube_token.json ]; then
+            TOKEN_B64=$(base64 -w 0 data/youtube_token.json)
+            gh secret set YOUTUBE_TOKEN --body "$TOKEN_B64" -R "${{ github.repository }}"
+            echo "✓ YOUTUBE_TOKEN secret updated"
+          else
+            echo "⚠ Token file missing or empty — skipping secret update"
+          fi
+
+      # ── 9. Commit video history ─────────────────────────────────────────────
+      # data/used_videos.json tracks which source clips have been used.
+      # Committing it prevents the pipeline from reusing the same clips on the next run.
+      - name: 📜 Commit video history (used_videos.json)
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/used_videos.json 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "ℹ No changes to used_videos.json"
+          else
+            git commit -m "chore: update video history [skip ci]"
+            git push
+            echo "✓ Video history committed"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 10. Upload logs ─────────────────────────────────────────────────────
+      - name: 📋 Upload pipeline logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-run-${{ github.run_number }}
+          path: logs/app.log
+          retention-days: 14
+          if-no-files-found: ignore
