@@ -234,33 +234,39 @@ class Downloader:
             base["cookiefile"] = str(cookies_path)
             logger.debug(f"Using cookies file: {cookies_path}")
 
-        # Use PO token if available (strongest bypass for datacenter IPs)
-        po_token_path = Path("data/po_token.json")
-        if po_token_path.exists():
-            try:
-                import json
-                po_data = json.loads(po_token_path.read_text())
-                if po_data.get("poToken") and po_data.get("visitorData"):
-                    base.setdefault("extractor_args", {})
-                    base["extractor_args"].setdefault("youtube", {})
-                    base["extractor_args"]["youtube"]["po_token"] = [
-                        f"web+{po_data['visitorData']}+{po_data['poToken']}"
-                    ]
-                    logger.debug("Using PO token for YouTube")
-            except Exception as e:
-                logger.debug(f"Could not load PO token: {e}")
-
         if platform == "youtube":
-            # mweb/ios player clients only provide pre-merged formats (no separate
-            # video+audio streams). Must use merged-only format selectors.
-            base["extractor_args"] = {
-                "youtube": {
-                    "player_client": ["mweb", "web_creator", "tv_embedded", "ios"],
-                }
+            # Build YouTube extractor_args — supports optional PO token
+            yt_args: dict = {
+                # tv_embedded & web bypass most bot-detection on datacenter IPs;
+                # mweb/ios as fallback give pre-merged streams
+                "player_client": ["tv_embedded", "web", "mweb", "ios"],
             }
-            # Use pre-merged formats first (compatible with mweb/ios),
-            # then fall back to split+merge for web_creator/tv_embedded.
-            base["format"] = "best[height<=1080][ext=mp4]/best[height<=1080]/best"
+
+            # Inject PO token if available (strongest bypass for datacenter IPs)
+            po_token_path = Path("data/po_token.json")
+            if po_token_path.exists():
+                try:
+                    import json
+                    po_data = json.loads(po_token_path.read_text())
+                    if po_data.get("poToken") and po_data.get("visitorData"):
+                        yt_args["po_token"] = [
+                            f"web+{po_data['visitorData']}+{po_data['poToken']}"
+                        ]
+                        logger.debug("Using PO token for YouTube")
+                except Exception as e:
+                    logger.debug(f"Could not load PO token: {e}")
+
+            base["extractor_args"] = {"youtube": yt_args}
+
+            # Shorts hanya punya merged streams — coba best merged dulu,
+            # baru split+merge untuk video panjang, lalu any best sebagai fallback
+            base["format"] = (
+                "best[height<=1080][ext=mp4]"
+                "/best[height<=1080]"
+                "/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
+                "/bestvideo[height<=1080]+bestaudio"
+                "/best"
+            )
             base["format_sort"] = ["height:1080", "ext:mp4", "vcodec:h264"]
 
         elif platform == "tiktok":
