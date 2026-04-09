@@ -25,6 +25,25 @@ import yt_dlp
 
 logger = logging.getLogger(__name__)
 
+
+def _yt_ci_opts() -> dict:
+    """
+    Bypass YouTube bot-check on CI/VPS IPs.
+    Uses tv_embedded player client which is less restricted than web client.
+    Includes cookies.txt if available for additional auth.
+    """
+    opts: dict = {
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["tv_embedded"],
+            }
+        },
+    }
+    cookies_path = Path("data/cookies.txt")
+    if cookies_path.exists() and cookies_path.stat().st_size > 100:
+        opts["cookiefile"] = str(cookies_path)
+    return opts
+
 # ── Comment timestamp parsing ─────────────────────────────────────────────────
 # Matches timestamps like 0:45, 1:23, 12:34, 1:23:45 in comment text
 _TS_RE = re.compile(r'\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b')
@@ -307,14 +326,7 @@ class VideoScraper:
         return self._used.get(vid_id, {}).get("count", 0)
 
     # ── Low-level yt-dlp helpers ──────────────────────────────────────────────
-    def _cookies_opts(self) -> dict:
-      """Return cookiefile option if cookies.txt exists."""
-      p = Path("data/cookies.txt")
-      if p.exists() and p.stat().st_size > 100:
-          return {"cookiefile": str(p)}
-      return {}
 
-  
     def _ydl_extract_flat(self, url: str, playlist_end: int = 20) -> list[dict]:
         """Run yt-dlp in flat-extract mode and return the entries list."""
         ydl_opts = {
@@ -324,7 +336,7 @@ class VideoScraper:
             "playlistend": playlist_end,
             "ignoreerrors": True,
             "nocheckcertificate": True,
-            **self._cookies_opts(),   # ← tambah ini
+            **_yt_ci_opts(),
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -344,7 +356,7 @@ class VideoScraper:
             "nocheckcertificate": True,
             "skip_download": True,
             "socket_timeout": 20,
-          **self._cookies_opts(),   # ← tambah ini
+            **_yt_ci_opts(),
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -370,12 +382,15 @@ class VideoScraper:
             "getcomments": True,
             "extractor_args": {
                 "youtube": {
+                    "player_client": ["tv_embedded"],
                     "comment_sort": ["top"],
                     "max_comments": ["120"],
                 }
             },
-            **self._cookies_opts(),   # ← tambah ini
         }
+        cookies_path = Path("data/cookies.txt")
+        if cookies_path.exists() and cookies_path.stat().st_size > 100:
+            opts["cookiefile"] = str(cookies_path)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
