@@ -227,7 +227,7 @@ class Downloader:
 
         # Use cookies.txt if available (helps bypass YouTube bot-check on CI)
         cookies_path = Path("data/cookies.txt")
-        if cookies_path.exists() and cookies_path.stat().st_size > 0:
+        if cookies_path.exists() and cookies_path.stat().st_size > 100:
             base["cookiefile"] = str(cookies_path)
             logger.debug(f"Using cookies file: {cookies_path}")
 
@@ -239,6 +239,12 @@ class Downloader:
                 "/best[height<=1080]"
                 "/best"
             )
+            # Use tv_embedded player to bypass bot-check on CI/VPS IPs
+            base["extractor_args"] = {
+                "youtube": {
+                    "player_client": ["tv_embedded"],
+                }
+            }
 
         elif platform == "tiktok":
             # Prefer no-watermark download URL; fall through to best quality
