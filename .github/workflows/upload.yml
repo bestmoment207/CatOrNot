@@ -48,7 +48,7 @@ jobs:
       - name: 📦 Install Python dependencies
         run: pip install -r requirements.txt
 
-        - name: 📝 Write .env from Secrets & Variables
+      - name: 📝 Write .env from Secrets & Variables
         env:
           GOOGLE_CLIENT_ID:     ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
