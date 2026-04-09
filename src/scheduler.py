@@ -1,0 +1,349 @@
+"""
+scheduler.py — Orchestrates the full pipeline and manages daily scheduling.
+
+Full pipeline per run:
+  1. Scrape viral cat video candidates
+  2. Download 5 clips (+ extras as fallbacks)
+  3. Randomly assign ranking order
+  4. Generate title/description/tags
+  5. Build the ranking video
+  6. Upload to YouTube
+  7. Mark source videos as used
+
+Progress is reported via an optional `reporter(percent, action, log_msg)` callable
+so the TUI (or any other caller) can display live updates.
+"""
+import logging
+import random
+import shutil
+import signal
+import sys
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Callable
+
+import schedule
+
+from config import Config
+from src.caption_gen import generate_caption
+from src.downloader import Downloader
+from src.scraper import VideoScraper
+from src.uploader import YouTubeUploader
+from src.video_editor import check_ffmpeg, create_ranking_video
+from src.video_tracker import VideoTracker
+
+logger = logging.getLogger(__name__)
+
+# Sentinel no-op reporter so _report() can always be called unconditionally
+_NOOP: Callable = lambda pct, action, log="": None
+
+
+# ── Auto-cleanup ──────────────────────────────────────────────────────────────
+
+def _cleanup_old_files(config: Config) -> None:
+    """
+    Delete files in data/downloaded and data/processed that are older than
+    config.data_cleanup_days days.  Preserves .gitkeep sentinels.
+    """
+    import time as _time
+    max_days = getattr(config, "data_cleanup_days", 3)
+    cutoff   = _time.time() - max_days * 86_400
+    freed    = 0
+
+    for folder in (config.download_dir, config.processed_dir):
+        if not folder.exists():
+            continue
+        for f in folder.iterdir():
+            if not f.is_file():
+                continue
+            if f.name == ".gitkeep":
+                continue
+            try:
+                if f.stat().st_mtime < cutoff:
+                    freed += f.stat().st_size
+                    f.unlink()
+                    logger.info(f"Auto-cleanup: deleted {f.name}")
+            except Exception as e:
+                logger.warning(f"Auto-cleanup: could not delete {f.name}: {e}")
+
+    if freed:
+        logger.info(f"Auto-cleanup freed {freed / 1_048_576:.1f} MB")
+
+
+def _make_clip_label(title: str) -> str:
+    """Turn a clip/chapter title into a short punchy ALL-CAPS label (≤16 chars)."""
+    import re
+    label = re.sub(r"#\w+", "", title).strip()
+    label = re.sub(r"https?://\S+", "", label).strip()
+    words = label.split()[:4]
+    result = " ".join(words)[:16]
+    return result.upper() if result else "CAT CLIP"
+
+
+class Pipeline:
+    def __init__(
+        self,
+        config: Config,
+        dry_run: bool = False,
+        reporter: Callable | None = None,
+    ):
+        self.config = config
+        self.dry_run = dry_run
+        self._reporter = reporter or _NOOP
+        self.scraper = VideoScraper(config)
+        self.downloader = Downloader(config)
+        self.uploader = YouTubeUploader(config) if not dry_run else None
+        self.tracker = VideoTracker(config)
+
+    # ── Reporter helper ───────────────────────────────────────────────────────
+
+    def _report(self, percent: float, action: str, log_msg: str = "") -> None:
+        if log_msg:
+            logger.info(f"[{percent:.0f}%] {log_msg}")
+        else:
+            logger.info(f"[{percent:.0f}%] {action}")
+        self._reporter(percent, action, log_msg)
+
+    # ── Main run ──────────────────────────────────────────────────────────────
+
+    def run(self) -> bool:
+        """Execute one full pipeline run. Returns True on success."""
+        run_id = uuid.uuid4().hex[:8]
+        dry = "[DRY RUN] " if self.dry_run else ""
+        n = self.config.clips_per_video
+
+        self._report(1, f"🚀  {dry}Starting pipeline…",
+                     f"Pipeline run {run_id} starting")
+
+        # ── 0a. Auto-cleanup old downloaded/processed files ───────────────────
+        _cleanup_old_files(self.config)
+
+        # ── 0b. Housekeeping — reset expired clip counters ─────────────────────
+        reset_count = self.scraper.reset_expired_clips()
+        if reset_count:
+            self._report(2, "♻️  Clip counters reset",
+                         f"♻️  {reset_count} clip(s) recycled back into the pool (>14 days old)")
+
+        # ── 1. Pick theme + scrape matching clips ─────────────────────────────
+        self._report(3, "✏  Picking video theme…",
+                     "Choosing title and matching search terms")
+        caption = generate_caption(n)
+        title = caption["title"]
+        self._report(4, "✏  Theme picked", f"Title: {title}")
+
+        self._report(5, "🔍  Scraping viral cat videos…",
+                     f"Searching for clips matching: {title}")
+        candidates = self.scraper.get_candidates(
+            want=n * 5,
+            yt_queries=caption.get("yt_queries"),
+            tt_hashtags=caption.get("tt_hashtags"),
+        )
+        if not candidates:
+            self._report(5, "❌  Scraping failed",
+                         "No candidates found — check internet connection")
+            return False
+        self._report(15, "🔍  Scraping complete",
+                     f"Found {len(candidates)} candidate videos")
+
+        # ── 2. Download — report per clip ─────────────────────────────────────
+        self._report(18, f"⬇  Downloading clips (0/{n})…", "Starting downloads")
+        downloaded: list[tuple[dict, Path]] = []
+
+        for video in candidates:
+            if len(downloaded) >= n:
+                break
+            done = len(downloaded)
+            base_pct = 18 + (done / n) * 26
+            slug = video.get("title", "untitled")[:55]
+            platform = video.get("platform", "?").upper()
+            self._report(
+                base_pct,
+                f"⬇  Downloading clip {done + 1}/{n}…",
+                f"↓ [{platform}] {slug}",
+            )
+            path = self.downloader.download(video)
+            if path:
+                downloaded.append((video, path))
+                kb = path.stat().st_size // 1024
+                self._report(
+                    18 + (len(downloaded) / n) * 26,
+                    f"⬇  Downloading clips ({len(downloaded)}/{n})…",
+                    f"✓ Clip {len(downloaded)}/{n} saved  ({kb} KB)",
+                )
+
+        if len(downloaded) < n:
+            self._report(18, "❌  Not enough clips downloaded",
+                         f"Got {len(downloaded)}/{n} — need exactly {n}, aborting")
+            return False
+
+        downloaded = downloaded[:n]
+        random.shuffle(downloaded)
+        clip_paths = [p for _, p in downloaded]
+        clip_platforms = [m.get("platform", "unknown") for m, _ in downloaded]
+        used_metas = [m for m, _ in downloaded]
+
+        # ── 3. Generate short clip labels for the ranking overlay ────────────
+        clip_labels = [_make_clip_label(m.get("title", "")) for m, _ in downloaded]
+        self._report(46, "✏  Caption ready", f"Title: {title}")
+
+        # ── 3b. Generate TTS voiceover (if enabled) ──────────────────────────
+        tts_audio    = None
+        _tts_tmp_dir = None
+        if getattr(self.config, "tts_enabled", False):
+            import tempfile as _tmp
+            from src.tts import TTSGenerator
+            _tts_tmp_dir = Path(_tmp.mkdtemp(prefix="catcentral_tts_"))
+            try:
+                tts_gen = TTSGenerator(voice=self.config.tts_voice)
+                self._report(48, "🎙  Generating TTS voiceover…",
+                             f"Voice: {self.config.tts_voice}")
+                tts_audio = tts_gen.generate_all(n, _tts_tmp_dir)
+                self._report(51, "🎙  TTS voiceover ready",
+                             "Intro + rank narrations generated")
+            except Exception as e:
+                logger.warning(f"TTS generation failed (non-fatal): {e}")
+                tts_audio = None
+
+        # ── 4. Build video ────────────────────────────────────────────────────
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = self.config.processed_dir / f"ranking_{ts}_{run_id}.mp4"
+
+        # n clips × up to 2 steps (blur + process) + concat + watermark
+        total_video_steps = n * 2 + 2
+        video_step = [0]
+
+        def on_video_step(step_msg: str) -> None:
+            video_step[0] += 1
+            pct = 52 + int(video_step[0] / total_video_steps * 36)
+            self._report(min(pct, 88), f"🎬  {step_msg}", step_msg)
+
+        self._report(52, "🎬  Building ranking video…",
+                     "Starting video processing — this takes 1–3 minutes")
+
+        try:
+            if not self.dry_run:
+                create_ranking_video(
+                    clip_paths=clip_paths,
+                    title=title,
+                    output_path=output_path,
+                    config=self.config,
+                    clip_platforms=clip_platforms,
+                    on_progress=on_video_step,
+                    tts_audio=tts_audio,
+                    clip_labels=clip_labels,
+                )
+            else:
+                logger.info(f"[DRY RUN] Would write video to {output_path}")
+                for i in range(total_video_steps):
+                    on_video_step(f"[DRY RUN] Video step {i + 1}/{total_video_steps}")
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.touch()
+        except Exception as e:
+            self._report(52, "❌  Video creation failed", str(e))
+            logger.error(f"Video creation failed: {e}", exc_info=True)
+            return False
+        finally:
+            # Always clean up TTS temp files after the video is built
+            if _tts_tmp_dir and _tts_tmp_dir.exists():
+                shutil.rmtree(_tts_tmp_dir, ignore_errors=True)
+
+        # ── 5. Upload ─────────────────────────────────────────────────────────
+        self._report(90, "📤  Uploading to YouTube…",
+                     "Starting resumable upload — may take a few minutes")
+
+        if self.dry_run:
+            self._report(99, "📤  [DRY RUN] Skipping upload",
+                         f"Would upload: {output_path.name}")
+            video_id = "DRY_RUN"
+        else:
+            video_id = self.uploader.upload(
+                video_path=output_path,
+                title=caption["title"],
+                description=caption["description"],
+                tags=caption["tags"],
+            )
+            if not video_id:
+                self._report(90, "❌  Upload failed",
+                             "YouTube upload returned no ID — check logs")
+                return False
+
+        # ── Done ──────────────────────────────────────────────────────────────
+        self.scraper.mark_used(used_metas)
+
+        # Record the upload so the tracker can manage the re-upload cycle
+        if not self.dry_run and video_id and video_id != "DRY_RUN":
+            self.tracker.record_upload(
+                youtube_id=video_id,
+                title=caption["title"],
+                clip_ids=[m["id"] for m in used_metas],
+                video_path=output_path,
+            )
+
+        self._report(
+            100,
+            "✅  Done!  Video is live on YouTube.",
+            f"https://www.youtube.com/shorts/{video_id}",
+        )
+        logger.info(f"Run {run_id} complete. video_id={video_id}")
+
+        # ── Post-run: check re-upload queue ───────────────────────────────────
+        if not self.dry_run and self.uploader:
+            try:
+                self.tracker.check_and_reupload(
+                    uploader=self.uploader,
+                    caption_gen=generate_caption,
+                    reporter=self._reporter,
+                )
+            except Exception as e:
+                logger.warning(f"Re-upload check failed (non-fatal): {e}")
+
+        return True
+
+
+# ── Headless scheduler (used by `python main.py schedule`) ───────────────────
+
+class Scheduler:
+    """Wraps the `schedule` library to run the pipeline at configured times."""
+
+    def __init__(self, config: Config, dry_run: bool = False):
+        self.config = config
+        self.dry_run = dry_run
+
+    def _job(self):
+        logger.info(
+            f"Scheduled job triggered at {datetime.now().strftime('%H:%M:%S')}"
+        )
+        pipeline = Pipeline(self.config, dry_run=self.dry_run)
+        try:
+            success = pipeline.run()
+            if not success:
+                logger.warning("Pipeline run returned failure — will retry at next slot")
+        except Exception as e:
+            logger.error(f"Pipeline run raised exception: {e}", exc_info=True)
+
+    def start(self):
+        """Register jobs and block forever (Ctrl+C to stop)."""
+        check_ffmpeg()
+
+        for t in self.config.upload_times:
+            schedule.every().day.at(t).do(self._job)
+            logger.info(f"Scheduled daily upload at {t}")
+
+        logger.info(
+            "Scheduler running. Upload times: "
+            + ", ".join(self.config.upload_times)
+            + "  (Ctrl+C to stop)"
+        )
+
+        def _shutdown(sig, frame):
+            logger.info("Scheduler stopped.")
+            sys.exit(0)
+
+        signal.signal(signal.SIGINT, _shutdown)
+        signal.signal(signal.SIGTERM, _shutdown)
+
+        while True:
+            schedule.run_pending()
+            time.sleep(30)

@@ -1,0 +1,19 @@
+# Terminal UI
+textual>=0.47.0
+
+# AI voiceover (free Microsoft Edge TTS — no API key needed)
+edge-tts>=6.1.9
+
+# Core scraping & downloading
+yt-dlp>=2024.3.10
+instaloader>=4.10.3
+
+# Google / YouTube API
+google-api-python-client>=2.126.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+
+# Scheduling & utilities
+schedule>=1.2.1
+python-dotenv>=1.0.1
+colorama>=0.4.6
