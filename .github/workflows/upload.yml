@@ -102,6 +102,17 @@ jobs:
           fi
           echo "✓ Token restored ($BYTES bytes)"
 
+      - name: 🍪 Restore YouTube cookies
+        run: |
+          mkdir -p data
+          if [ -n "${{ secrets.YOUTUBE_COOKIES_B64 }}" ]; then
+            echo '${{ secrets.YOUTUBE_COOKIES_B64 }}' | base64 --decode > data/cookies.txt
+            LINES=$(wc -l < data/cookies.txt)
+            echo "✓ cookies.txt restored ($LINES lines)"
+          else
+            echo "⚠ YOUTUBE_COOKIES_B64 secret not set — downloads may fail bot-check"
+          fi
+
       - name: 🚀 Run CatOrNot pipeline
         run: |
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
