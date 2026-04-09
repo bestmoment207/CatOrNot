@@ -48,16 +48,7 @@ jobs:
       - name: 📦 Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: 📦 Install youtube-po-token-generator
-        run: npm install youtube-po-token-generator
-
-      # Runs headless Chrome to generate a valid PO token fresh every run.
-      # Bypasses YouTube "Sign in to confirm you're not a bot" on Actions IPs.
-      - name: 🔐 Generate YouTube PO token
-        run: node --max-old-space-size=4096 generate_po_token.mjs
-        continue-on-error: true
-
-      - name: 📝 Write .env from Secrets & Variables
+        - name: 📝 Write .env from Secrets & Variables
         env:
           GOOGLE_CLIENT_ID:     ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
