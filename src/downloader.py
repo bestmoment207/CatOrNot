@@ -238,15 +238,23 @@ class Downloader:
 
             po = self._load_po_token()
             if po:
-                # PO token available (GitHub Actions) — use web client
+                # PO token — yt-dlp 2026.x format: "CLIENT.CONTEXT+TOKEN"
                 base["extractor_args"] = {
                     "youtube": {
-                        "po_token": [f"web+{po['po_token']}"],
+                        "po_token": [
+                            f"web.gvs+{po['po_token']}",
+                            f"web.player+{po['po_token']}",
+                        ],
                         "player_client": ["web"],
                     }
                 }
+                # web client needs browser UA, not android UA
                 base["http_headers"] = {
-                    **base.get("http_headers", {}),
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
                     "X-Goog-Visitor-Id": po["visitor_data"],
                 }
             else:
