@@ -246,7 +246,12 @@ class VideoScraper:
                 if isinstance(data, list):
                     return {vid_id: {"count": MAX_CLIP_REUSE} for vid_id in data}
                 if isinstance(data, dict):
-                    return data
+                    # Handle legacy format: {"used": [...list of ids...]}
+                    if "used" in data and isinstance(data["used"], list):
+                        return {vid_id: {"count": MAX_CLIP_REUSE} for vid_id in data["used"]}
+                    # Normal format: {vid_id: {...}, ...}
+                    # Filter out any values that are not dicts (safety check)
+                    return {k: v for k, v in data.items() if isinstance(v, dict)}
             except Exception:
                 pass
         return {}
