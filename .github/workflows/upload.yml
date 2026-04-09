@@ -54,7 +54,8 @@ jobs:
       # Runs headless Chrome to generate a valid PO token fresh every run.
       # Bypasses YouTube "Sign in to confirm you're not a bot" on Actions IPs.
       - name: 🔐 Generate YouTube PO token
-        run: node generate_po_token.mjs
+        run: node --max-old-space-size=4096 generate_po_token.mjs
+        continue-on-error: true
 
       - name: 📝 Write .env from Secrets & Variables
         env:
