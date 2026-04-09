@@ -1,12 +1,4 @@
-"""
-scraper.py — Discovers viral cat clips by extracting segments from popular
-YouTube compilation videos.
 
-Strategy:
-  Phase 0a — Dedicated Shorts scraper: aggressively searches for funny cat clips
-              ≤20 seconds using 30+ targeted queries. These are the ideal inputs —
-              the whole video is the funny moment, no slicing required.
-  Phase 0b — Viral ranking sources: find cat ranking Shorts with 500k+ views,
               extract source clip IDs from descriptions and chapter titles.
   Phase 1  — Individual viral clips: 5–60s videos, with comment-timestamp peak
               detection for 20–60s clips to find the funniest window.
@@ -35,13 +27,30 @@ def _yt_ci_opts() -> dict:
     opts: dict = {
         "extractor_args": {
             "youtube": {
-                "player_client": ["tv_embedded"],
+                # tv_embedded alone is blocked on datacenter IPs.
+                # mweb + web_creator + ios provide better bypass for CI.
+                "player_client": ["mweb", "web_creator", "tv_embedded", "ios"],
             }
         },
+        "nocheckcertificate": True,
     }
     cookies_path = Path("data/cookies.txt")
     if cookies_path.exists() and cookies_path.stat().st_size > 100:
         opts["cookiefile"] = str(cookies_path)
+
+    # Use PO token if available (strongest bypass for datacenter IPs)
+    po_token_path = Path("data/po_token.json")
+    if po_token_path.exists():
+        try:
+            import json
+            po_data = json.loads(po_token_path.read_text())
+            if po_data.get("poToken") and po_data.get("visitorData"):
+                opts["extractor_args"]["youtube"]["po_token"] = [
+                    f"web+{po_data['visitorData']}+{po_data['poToken']}"
+                ]
+        except Exception:
+            pass
+
     return opts
 
 # ── Comment timestamp parsing ─────────────────────────────────────────────────
