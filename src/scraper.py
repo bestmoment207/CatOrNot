@@ -1,4 +1,12 @@
+"""
+scraper.py — Discovers viral cat clips by extracting segments from popular
+YouTube compilation videos.
 
+Strategy:
+  Phase 0a — Dedicated Shorts scraper: aggressively searches for funny cat clips
+              ≤20 seconds using 30+ targeted queries. These are the ideal inputs —
+              the whole video is the funny moment, no slicing required.
+  Phase 0b — Viral ranking sources: find cat ranking Shorts with 500k+ views,
               extract source clip IDs from descriptions and chapter titles.
   Phase 1  — Individual viral clips: 5–60s videos, with comment-timestamp peak
               detection for 20–60s clips to find the funniest window.
