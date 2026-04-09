@@ -307,7 +307,14 @@ class VideoScraper:
         return self._used.get(vid_id, {}).get("count", 0)
 
     # ── Low-level yt-dlp helpers ──────────────────────────────────────────────
+    def _cookies_opts(self) -> dict:
+      """Return cookiefile option if cookies.txt exists."""
+      p = Path("data/cookies.txt")
+      if p.exists() and p.stat().st_size > 100:
+          return {"cookiefile": str(p)}
+      return {}
 
+  
     def _ydl_extract_flat(self, url: str, playlist_end: int = 20) -> list[dict]:
         """Run yt-dlp in flat-extract mode and return the entries list."""
         ydl_opts = {
@@ -317,6 +324,7 @@ class VideoScraper:
             "playlistend": playlist_end,
             "ignoreerrors": True,
             "nocheckcertificate": True,
+            **self._cookies_opts(),   # ← tambah ini
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -336,6 +344,7 @@ class VideoScraper:
             "nocheckcertificate": True,
             "skip_download": True,
             "socket_timeout": 20,
+          **self._cookies_opts(),   # ← tambah ini
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -365,6 +374,7 @@ class VideoScraper:
                     "max_comments": ["120"],
                 }
             },
+            **self._cookies_opts(),   # ← tambah ini
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
