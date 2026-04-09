@@ -246,12 +246,7 @@ class VideoScraper:
                 if isinstance(data, list):
                     return {vid_id: {"count": MAX_CLIP_REUSE} for vid_id in data}
                 if isinstance(data, dict):
-                    # Handle legacy format: {"used": [...list of ids...]}
-                    if "used" in data and isinstance(data["used"], list):
-                        return {vid_id: {"count": MAX_CLIP_REUSE} for vid_id in data["used"]}
-                    # Normal format: {vid_id: {...}, ...}
-                    # Filter out any values that are not dicts (safety check)
-                    return {k: v for k, v in data.items() if isinstance(v, dict)}
+                    return data
             except Exception:
                 pass
         return {}
@@ -313,50 +308,8 @@ class VideoScraper:
 
     # ── Low-level yt-dlp helpers ──────────────────────────────────────────────
 
-    def _po_token_opts(self) -> dict:
-        """
-        Load PO token + visitor_data from data/po_token.json if available.
-        Generated fresh each pipeline run by generate_po_token.mjs (Node.js).
-        Returns extra yt-dlp options to merge into any request.
-        Without this, GitHub Actions IPs get "Sign in to confirm you're not a bot".
-        """
-        po_path = Path("data/po_token.json")
-        if not po_path.exists():
-            return {}
-        try:
-            data = json.loads(po_path.read_text())
-            po_token = data.get("po_token", "")
-            visitor_data = data.get("visitor_data", "")
-            if not po_token or not visitor_data:
-                return {}
-            logger.debug("PO token loaded successfully")
-            return {
-                "extractor_args": {
-                    "youtube": {
-                        # yt-dlp 2026.x format: "CLIENT.CONTEXT+TOKEN"
-                        "po_token": [
-                            f"web.gvs+{po_token}",
-                            f"web.player+{po_token}",
-                        ],
-                        "player_client": ["web"],
-                    }
-                },
-                "http_headers": {
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    "X-Goog-Visitor-Id": visitor_data,
-                },
-            }
-        except Exception as e:
-            logger.debug(f"Failed to load PO token: {e}")
-            return {}
-
     def _ydl_extract_flat(self, url: str, playlist_end: int = 20) -> list[dict]:
         """Run yt-dlp in flat-extract mode and return the entries list."""
-        po = self._po_token_opts()
         ydl_opts = {
             "extract_flat": True,
             "quiet": True,
@@ -364,7 +317,6 @@ class VideoScraper:
             "playlistend": playlist_end,
             "ignoreerrors": True,
             "nocheckcertificate": True,
-            **po,
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -377,7 +329,6 @@ class VideoScraper:
 
     def _ydl_get_info(self, url: str) -> dict | None:
         """Get full video metadata including chapters (no download)."""
-        po = self._po_token_opts()
         opts = {
             "quiet": True,
             "no_warnings": True,
@@ -385,7 +336,6 @@ class VideoScraper:
             "nocheckcertificate": True,
             "skip_download": True,
             "socket_timeout": 20,
-            **po,
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -402,13 +352,6 @@ class VideoScraper:
         This leverages crowd wisdom: if many viewers timestamp "1:23 💀", that
         moment is almost certainly the funniest part of the video.
         """
-        po = self._po_token_opts()
-        yt_args = {
-            "comment_sort": ["top"],
-            "max_comments": ["120"],
-            # merge po_token into youtube extractor args if present
-            **po.get("extractor_args", {}).get("youtube", {}),
-        }
         opts = {
             "quiet": True,
             "no_warnings": True,
@@ -416,8 +359,12 @@ class VideoScraper:
             "nocheckcertificate": True,
             "skip_download": True,
             "getcomments": True,
-            "extractor_args": {"youtube": yt_args},
-            **({"http_headers": po["http_headers"]} if po.get("http_headers") else {}),
+            "extractor_args": {
+                "youtube": {
+                    "comment_sort": ["top"],
+                    "max_comments": ["120"],
+                }
+            },
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
