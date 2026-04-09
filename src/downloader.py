@@ -251,13 +251,6 @@ class Downloader:
                 logger.debug(f"Could not load PO token: {e}")
 
         if platform == "youtube":
-            # Prefer vertical / square formats for Shorts; fall back to best
-            base["format"] = (
-                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
-                "/bestvideo[height<=1080]+bestaudio"
-                "/best[height<=1080]"
-                "/best"
-            )
             # Use multiple player clients as fallback chain.
             # mweb + ios work better than tv_embedded on datacenter IPs.
             base["extractor_args"] = {
@@ -265,6 +258,14 @@ class Downloader:
                     "player_client": ["mweb", "web_creator", "tv_embedded", "ios"],
                 }
             }
+            base["format"] = (
+                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
+                "/bestvideo[height<=1080]+bestaudio"
+                "/best[height<=1080][ext=mp4]"
+                "/best[height<=1080]"
+                "/bestvideo+bestaudio"
+                "/best"
+            )
 
         elif platform == "tiktok":
             # Prefer no-watermark download URL; fall through to best quality
