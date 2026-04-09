@@ -251,21 +251,17 @@ class Downloader:
                 logger.debug(f"Could not load PO token: {e}")
 
         if platform == "youtube":
-            # Use multiple player clients as fallback chain.
-            # mweb + ios work better than tv_embedded on datacenter IPs.
+            # mweb/ios player clients only provide pre-merged formats (no separate
+            # video+audio streams). Must use merged-only format selectors.
             base["extractor_args"] = {
                 "youtube": {
                     "player_client": ["mweb", "web_creator", "tv_embedded", "ios"],
                 }
             }
-            base["format"] = (
-                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
-                "/bestvideo[height<=1080]+bestaudio"
-                "/best[height<=1080][ext=mp4]"
-                "/best[height<=1080]"
-                "/bestvideo+bestaudio"
-                "/best"
-            )
+            # Use pre-merged formats first (compatible with mweb/ios),
+            # then fall back to split+merge for web_creator/tv_embedded.
+            base["format"] = "best[height<=1080][ext=mp4]/best[height<=1080]/best"
+            base["format_sort"] = ["height:1080", "ext:mp4", "vcodec:h264"]
 
         elif platform == "tiktok":
             # Prefer no-watermark download URL; fall through to best quality
