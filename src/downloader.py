@@ -215,8 +215,11 @@ class Downloader:
             "merge_output_format": "mp4",
             # Hard timeout: abort if a single fragment stalls for >30s
             "socket_timeout": 30,
-            "retries": 2,
-            "fragment_retries": 2,
+            "retries": 3,
+            "fragment_retries": 3,
+            # Small delay between requests to avoid triggering bot detection
+            "sleep_interval": 1,
+            "max_sleep_interval": 3,
             "postprocessors": [
                 {
                     "key": "FFmpegVideoConvertor",
@@ -231,6 +234,22 @@ class Downloader:
             base["cookiefile"] = str(cookies_path)
             logger.debug(f"Using cookies file: {cookies_path}")
 
+        # Use PO token if available (strongest bypass for datacenter IPs)
+        po_token_path = Path("data/po_token.json")
+        if po_token_path.exists():
+            try:
+                import json
+                po_data = json.loads(po_token_path.read_text())
+                if po_data.get("poToken") and po_data.get("visitorData"):
+                    base.setdefault("extractor_args", {})
+                    base["extractor_args"].setdefault("youtube", {})
+                    base["extractor_args"]["youtube"]["po_token"] = [
+                        f"web+{po_data['visitorData']}+{po_data['poToken']}"
+                    ]
+                    logger.debug("Using PO token for YouTube")
+            except Exception as e:
+                logger.debug(f"Could not load PO token: {e}")
+
         if platform == "youtube":
             # Prefer vertical / square formats for Shorts; fall back to best
             base["format"] = (
@@ -239,10 +258,11 @@ class Downloader:
                 "/best[height<=1080]"
                 "/best"
             )
-            # Use tv_embedded player to bypass bot-check on CI/VPS IPs
+            # Use multiple player clients as fallback chain.
+            # mweb + ios work better than tv_embedded on datacenter IPs.
             base["extractor_args"] = {
                 "youtube": {
-                    "player_client": ["tv_embedded"],
+                    "player_client": ["mweb", "web_creator", "tv_embedded", "ios"],
                 }
             }
 
