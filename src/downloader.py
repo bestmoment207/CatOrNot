@@ -50,6 +50,7 @@ class Downloader:
         self.config = config
         self.out_dir: Path = config.download_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        self._diag_count = 0  # limit format diagnostics to first 3 failures
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -112,6 +113,10 @@ class Downloader:
 
         except yt_dlp.utils.DownloadError as e:
             logger.warning(f"Download failed for {url}: {e}")
+            # Diagnostic: show available formats (first 3 failures only)
+            if self._diag_count < 3:
+                self._diag_count += 1
+                self._log_available_formats(url)
             self._cleanup(vid_id)
             return None
         except Exception as e:
@@ -309,6 +314,45 @@ class Downloader:
                 p.unlink()
             except Exception:
                 pass
+
+    def _log_available_formats(self, url: str):
+        """Probe and log available formats for a URL — diagnostic only."""
+        try:
+            probe_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "nocheckcertificate": True,
+            }
+            cookies_path = Path("data/cookies.txt")
+            if cookies_path.exists() and cookies_path.stat().st_size > 100:
+                probe_opts["cookiefile"] = str(cookies_path)
+            probe_opts["extractor_args"] = {
+                "youtube": {"player_client": ["tv_embedded", "web", "mweb", "ios"]}
+            }
+            with yt_dlp.YoutubeDL(probe_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    logger.info(f"  [diag] No info returned for {url}")
+                    return
+                fmts = info.get("formats", [])
+                if not fmts:
+                    logger.info(f"  [diag] No formats at all for {url}")
+                    return
+                logger.info(f"  [diag] Available formats for {url}:")
+                for f in fmts:
+                    fid = f.get("format_id", "?")
+                    ext = f.get("ext", "?")
+                    h = f.get("height") or "?"
+                    vc = (f.get("vcodec") or "none")[:12]
+                    ac = (f.get("acodec") or "none")[:12]
+                    note = f.get("format_note", "")
+                    logger.info(
+                        f"    id={fid:<18s} ext={ext:<5s} "
+                        f"res={h}p  vcodec={vc:<12s} acodec={ac:<12s} {note}"
+                    )
+        except Exception as e:
+            logger.info(f"  [diag] Format probe failed: {e}")
 
 
 def _fmt_size(path: Path) -> str:
