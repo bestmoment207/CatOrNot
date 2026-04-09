@@ -105,28 +105,6 @@ jobs:
             echo "⚠ YOUTUBE_COOKIES_B64 secret not set — downloads may fail bot-check"
           fi
 
-      - name: 🎟️ Generate PO Token (YouTube bot-check bypass)
-        run: |
-          # Install dependencies for po_token_generator
-          npm install --save-dev @duckist/potoken-generator 2>/dev/null || true
-          # Try to generate PO token — if it fails, we fall back to cookies only
-          if node -e "
-            const { generatePoToken } = require('@duckist/potoken-generator');
-            generatePoToken().then(r => {
-              if (r && r.poToken && r.visitorData) {
-                const fs = require('fs');
-                fs.writeFileSync('data/po_token.json', JSON.stringify(r));
-                console.log('✓ PO token generated, visitorData=' + r.visitorData.slice(0,8) + '...');
-              } else {
-                console.log('⚠ PO token generation returned empty result');
-              }
-            }).catch(e => console.log('⚠ PO token generation failed:', e.message));
-          " 2>/dev/null; then
-            echo "PO token step completed"
-          else
-            echo "⚠ PO token step skipped — will rely on cookies + player client fallback"
-          fi
-
       - name: 🚀 Run CatOrNot pipeline
         run: |
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
